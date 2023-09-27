@@ -154,9 +154,74 @@ sensor_msgs::CompressedImage ifm3d_to_ros_compressed_image(ifm3d::Buffer&& image
   return ifm3d_to_ros_compressed_image(image, header, format, logger);
 }
 
+void fill_ros_cloud_data(sensor_msgs::PointCloud2& cloud)
+{
+  sensor_msgs::PointField x_field{};
+  x_field.name = "x";
+  x_field.offset = 0;
+  x_field.datatype = sensor_msgs::PointField::FLOAT32;
+  x_field.count = 1;
+
+  sensor_msgs::PointField y_field{};
+  y_field.name = "y";
+  y_field.offset = 4;
+  y_field.datatype = sensor_msgs::PointField::FLOAT32;
+  y_field.count = 1;
+
+  sensor_msgs::PointField z_field{};
+  z_field.name = "z";
+  z_field.offset = 8;
+  z_field.datatype = sensor_msgs::PointField::FLOAT32;
+  z_field.count = 1;
+
+  cloud.fields = {
+    x_field,
+    y_field,
+    z_field,
+  };
+
+  cloud.point_step = cloud.fields.size() * sizeof(float);
+  cloud.row_step = cloud.point_step * cloud.width;
+  cloud.is_dense = true;
+}
+
+void fill_o3d_ros_cloud_data(ifm3d::Buffer& image, sensor_msgs::PointCloud2& cloud)
+{
+  fill_ros_cloud_data(cloud);
+
+  const unsigned int cloud_int_point_step = cloud.fields.size() * sizeof(int16_t);
+  const unsigned int cloud_int_row_step = cloud_int_point_step * cloud.width;
+  
+  std::vector<unsigned char> cloud_int_data;
+  cloud_int_data.insert(cloud_int_data.end(), image.ptr<>(0), std::next(image.ptr<>(0), cloud_int_row_step * cloud.height));
+
+  for (int i = 0; i < cloud_int_row_step * cloud.height; i+= sizeof(int16_t))
+  {
+    unsigned char cloud_int_data_pt[sizeof(int16_t)];
+    std::copy(cloud_int_data.begin() + i, cloud_int_data.begin() + i + sizeof(int16_t), cloud_int_data_pt);
+
+    int16_t cloud_int_val;
+    std::memcpy(&cloud_int_val, cloud_int_data_pt, sizeof(int16_t));
+
+    const float cloud_float_val = static_cast<float>(cloud_int_val) / 1000.0;
+
+    unsigned char cloud_float_data_pt[sizeof(float)];
+    std::memcpy(cloud_float_data_pt, &cloud_float_val, sizeof(float));
+
+    cloud.data.insert(cloud.data.end(), &cloud_float_data_pt[0], &cloud_float_data_pt[sizeof(float)]);
+  }
+}
+
+void fill_o3r_ros_cloud_data(ifm3d::Buffer& image, sensor_msgs::PointCloud2& cloud)
+{
+  fill_ros_cloud_data(cloud);
+  cloud.data.insert(cloud.data.end(), image.ptr<>(0), std::next(image.ptr<>(0), cloud.row_step * cloud.height));
+}
+
 sensor_msgs::PointCloud2 ifm3d_to_ros_cloud(ifm3d::Buffer& image,  // Need non-const image because image.begin(),
                                                                   // image.end() don't have const overloads.
-                                            const std_msgs::Header& header, const std::string& logger)
+                                            const std_msgs::Header& header, const std::string& logger, 
+                                            const ifm3d_ros::CameraModel& camera_model)
 {
   // Accessing the header content
   uint32_t header_seq = header.seq;
@@ -179,49 +244,36 @@ sensor_msgs::PointCloud2 ifm3d_to_ros_cloud(ifm3d::Buffer& image,  // Need non-c
     return result;
   }
 
-  if (image.dataFormat() != ifm3d::pixel_format::FORMAT_32F3 && image.dataFormat() != ifm3d::pixel_format::FORMAT_32F)
+  if (camera_model == ifm3d_ros::CameraModel::O3R)
   {
-    ROS_ERROR_NAMED(logger, "Unsupported pixel format %ld for point cloud",
-                    static_cast<std::size_t>(image.dataFormat()));
-    return result;
+    if (image.dataFormat() != ifm3d::pixel_format::FORMAT_32F3 && image.dataFormat() != ifm3d::pixel_format::FORMAT_32F)
+    {
+      ROS_ERROR_NAMED(logger, "Unsupported pixel format %ld for point cloud from O3R",
+                      static_cast<std::size_t>(image.dataFormat()));
+      return result;
+    }
+
+    fill_o3r_ros_cloud_data(image, result);
   }
+  else if (camera_model == ifm3d_ros::CameraModel::O3D)
+  {
+    if (image.dataFormat() != ifm3d::pixel_format::FORMAT_16S)
+    {
+      ROS_ERROR_NAMED(logger, "Unsupported pixel format %ld for point cloud from O3D",
+                      static_cast<std::size_t>(image.dataFormat()));
+      return result;
+    }
 
-  sensor_msgs::PointField x_field{};
-  x_field.name = "x";
-  x_field.offset = 0;
-  x_field.datatype = sensor_msgs::PointField::FLOAT32;
-  x_field.count = 1;
-
-  sensor_msgs::PointField y_field{};
-  y_field.name = "y";
-  y_field.offset = 4;
-  y_field.datatype = sensor_msgs::PointField::FLOAT32;
-  y_field.count = 1;
-
-  sensor_msgs::PointField z_field{};
-  z_field.name = "z";
-  z_field.offset = 8;
-  z_field.datatype = sensor_msgs::PointField::FLOAT32;
-  z_field.count = 1;
-
-  result.fields = {
-    x_field,
-    y_field,
-    z_field,
-  };
-
-  result.point_step = result.fields.size() * sizeof(float);
-  result.row_step = result.point_step * result.width;
-  result.is_dense = true;
-  result.data.insert(result.data.end(), image.ptr<>(0), std::next(image.ptr<>(0), result.row_step * result.height));
+    fill_o3d_ros_cloud_data(image, result);
+  }
 
   return result;
 }
 
 sensor_msgs::PointCloud2 ifm3d_to_ros_cloud(ifm3d::Buffer&& image, const std_msgs::Header& header,
-                                            const std::string& logger)
+                                            const std::string& logger, const ifm3d_ros::CameraModel& camera_model)
 {
-  return ifm3d_to_ros_cloud(image, header, logger);
+  return ifm3d_to_ros_cloud(image, header, logger, camera_model);
 }
 
 using json = ifm3d::json;
@@ -250,12 +302,13 @@ void ifm3d_ros::CameraNodelet::onInit()
   bool xyz_image_stream;
   bool confidence_image_stream;
   bool radial_distance_image_stream;
-  bool radial_distance_noise_stream;
+  bool radial_distance_noise_stream{ false };
   bool norm_amplitude_image_stream;
   bool amplitude_image_stream;
-  bool extrinsic_image_stream;
+  bool extrinsic_image_stream{ false };
   bool intrinsic_image_stream;
-  bool rgb_image_stream;
+  bool rgb_image_stream{ false };
+  std::string cam_model{ "others" };
 
   if ((nn.size() > 0) && (nn.at(0) == '/'))
   {
@@ -279,16 +332,36 @@ void ifm3d_ros::CameraNodelet::onInit()
   this->np_.param("soft_off_timeout_tolerance_secs", this->soft_off_timeout_tolerance_secs_, 600.0);
   this->np_.param("frame_latency_thresh", this->frame_latency_thresh_, 60.0f);
   this->np_.param("frame_id_base", frame_id_base, frame_id_base);
+  this->np_.param("camera_model", cam_model, cam_model);
+
+  if (cam_model == "o3r")
+  { 
+    camera_model_ = CameraModel::O3R;
+  }
+  else if (cam_model == "o3d")
+  {
+    camera_model_ = CameraModel::O3D;
+  }
+  else
+  {
+    NODELET_ERROR_ONCE("Unsupported camera model. Exiting...");
+    return;
+  }
+  NODELET_INFO_ONCE("Current camera model: %s", cam_model.c_str());
 
   // image stream ros parameter server setting
   this->np_.param("xyz_image_stream", xyz_image_stream, true);
   this->np_.param("confidence_image_stream", confidence_image_stream, true);
   this->np_.param("radial_distance_image_stream", radial_distance_image_stream, true);
-  this->np_.param("radial_distance_noise_stream", radial_distance_noise_stream, true);
   this->np_.param("amplitude_image_stream", amplitude_image_stream, true);
-  this->np_.param("extrinsic_image_stream", extrinsic_image_stream, true);
   this->np_.param("intrinsic_image_stream", intrinsic_image_stream, true);
-  this->np_.param("rgb_image_stream", rgb_image_stream, true);
+
+  if (camera_model_ == CameraModel::O3R)
+  {
+    this->np_.param("radial_distance_noise_stream", radial_distance_noise_stream, true);
+    this->np_.param("extrinsic_image_stream", extrinsic_image_stream, true);
+    this->np_.param("rgb_image_stream", rgb_image_stream, true);
+  }
 
   // default schema masks
   std::list<ifm3d::buffer_id> buffer_list;
@@ -331,7 +404,10 @@ void ifm3d_ros::CameraNodelet::onInit()
 
   // lastly get the camera type based on PortsInfo
   this->np_.param("imager_type", this->imager_type_ , std::string("3D"));
-  this->imager_type_ = GetCameraType(this->pcic_port_);
+  if (camera_model_ == CameraModel::O3R)  // not supported in O3D
+  {
+    this->imager_type_ = GetCameraType(this->pcic_port_);
+  }
 
   NODELET_INFO_ONCE("Imager type current: %s, default %s", imager_type_.c_str(), "3D");
   NODELET_DEBUG_STREAM("setup ros node parameters finished");
@@ -739,9 +815,13 @@ void ifm3d_ros::CameraNodelet::Callback3D(ifm3d::Frame::Ptr frame){
       xyz_img =frame->GetBuffer(ifm3d::buffer_id::XYZ);
       confidence_img = frame->GetBuffer(ifm3d::buffer_id::CONFIDENCE_IMAGE);
       distance_img = frame->GetBuffer(ifm3d::buffer_id::RADIAL_DISTANCE_IMAGE);
-      distance_noise_img = frame->GetBuffer(ifm3d::buffer_id::RADIAL_DISTANCE_NOISE);
       amplitude_img = frame->GetBuffer(ifm3d::buffer_id::NORM_AMPLITUDE_IMAGE);
-      extrinsics = frame->GetBuffer(ifm3d::buffer_id::EXTRINSIC_CALIB);
+      
+      if (camera_model_ == CameraModel::O3R)
+      {
+        distance_noise_img = frame->GetBuffer(ifm3d::buffer_id::RADIAL_DISTANCE_NOISE);
+        extrinsics = frame->GetBuffer(ifm3d::buffer_id::EXTRINSIC_CALIB);
+      }
       this->last_frame_time_ = frame->TimeStamps()[0];
       this->last_frame_local_time_ = ros::Time::now();
 
@@ -801,7 +881,7 @@ void ifm3d_ros::CameraNodelet::Callback3D(ifm3d::Frame::Ptr frame){
 
     if (this->xyz_image_stream_ && frame->HasBuffer(ifm3d::buffer_id::XYZ))
     {
-      this->cloud_pub_.publish(ifm3d_to_ros_cloud(xyz_img, head, getName()));
+      this->cloud_pub_.publish(ifm3d_to_ros_cloud(xyz_img, head, getName(), camera_model_));
       NODELET_DEBUG_STREAM("after publishing point cloud image");
     }
 

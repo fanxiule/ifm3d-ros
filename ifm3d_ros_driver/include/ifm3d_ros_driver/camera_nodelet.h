@@ -36,6 +36,14 @@ namespace ifm3d_ros
  * class is used to manage, configure, and acquire data from a single ifm3d
  * camera.
  */
+
+// specify camera type
+enum CameraModel
+{
+  O3R,
+  O3D
+};
+
 class CameraNodelet : public nodelet::Nodelet
 {
 private:
@@ -75,6 +83,8 @@ private:
   ifm3d::TimePointT last_frame_time_;
   ros::Time last_frame_local_time_;
 
+  CameraModel camera_model_;
+  
   bool xyz_image_stream_;
   bool confidence_image_stream_;
   bool radial_distance_image_stream_;

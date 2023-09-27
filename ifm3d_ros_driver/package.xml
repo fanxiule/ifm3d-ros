@@ -20,6 +20,7 @@
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>ifm3d_ros_msgs</depend>
+  <depend>ifm3d</depend>
 
   <test_depend>cv_bridge</test_depend>
 
